@@ -444,4 +444,5 @@ st.divider()
 st.caption(
     "Note: This tool scrapes the live page each time you search, so results "
     "reflect whatever is currently published on the BRACU site."
+    "Made BY BLUE"
 )
