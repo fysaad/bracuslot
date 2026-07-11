@@ -337,7 +337,7 @@ with st.form("slot_form"):
     col1, col2 = st.columns(2)
     with col1:
         credits_ = st.number_input(
-            "Earned Credits", min_value=0.0, max_value=200.0, value=73.5, step=0.5, format="%.2f"
+            "Earned Credits", min_value=0.0, max_value=207.0, value=0.00, step=0.5, format="%.2f"
         )
     with col2:
         program = st.selectbox(
