@@ -384,21 +384,45 @@ if submitted:
                 st.success("✅ Slot found!")
                 st.markdown(
                     f"""
-                    <div style="
-                        border: 1px solid #2e7d32;
+                    <style>
+                    .slot-card {{
+                        --card-bg: #f1f8f2;
+                        --card-border: #2e7d32;
+                        --card-heading: #1b5e20;
+                        --card-text: #1b1b1b;
+                        --card-hr: #a5d6a7;
+                    }}
+                    @media (prefers-color-scheme: dark) {{
+                        .slot-card {{
+                            --card-bg: #16241a;
+                            --card-border: #4caf50;
+                            --card-heading: #81c784;
+                            --card-text: #f1f1f1;
+                            --card-hr: #3e5c44;
+                        }}
+                    }}
+                    .slot-card {{
+                        border: 1px solid var(--card-border);
                         border-radius: 12px;
                         padding: 24px;
-                        background-color: #f1f8f2;
+                        background-color: var(--card-bg);
+                        color: var(--card-text);
                         margin-top: 10px;
-                    ">
-                        <h3 style="margin-top:0; color:#1b5e20;">Your Designated Slot</h3>
-                        <p style="font-size:16px; margin:4px 0;"><b>Program:</b> {program.upper()}</p>
-                        <p style="font-size:16px; margin:4px 0;"><b>Earned Credits:</b> {credits_}</p>
-                        <hr style="border-color:#a5d6a7;">
-                        <p style="font-size:20px; margin:6px 0;">📅 <b>Date:</b> {match.date or '—'}</p>
-                        <p style="font-size:20px; margin:6px 0;">🗓️ <b>Day:</b> {match.day or '—'}</p>
-                        <p style="font-size:20px; margin:6px 0;">⏰ <b>Start:</b> {match.start or '—'}</p>
-                        <p style="font-size:20px; margin:6px 0;">⏰ <b>End:</b> {match.end or '—'}</p>
+                    }}
+                    .slot-card h3 {{ margin-top: 0; color: var(--card-heading); }}
+                    .slot-card p {{ font-size: 20px; margin: 6px 0; color: var(--card-text); }}
+                    .slot-card p.meta {{ font-size: 16px; margin: 4px 0; }}
+                    .slot-card hr {{ border-color: var(--card-hr); }}
+                    </style>
+                    <div class="slot-card">
+                        <h3>Your Designated Slot</h3>
+                        <p class="meta"><b>Program:</b> {program.upper()}</p>
+                        <p class="meta"><b>Earned Credits:</b> {credits_}</p>
+                        <hr>
+                        <p>📅 <b>Date:</b> {match.date or '—'}</p>
+                        <p>🗓️ <b>Day:</b> {match.day or '—'}</p>
+                        <p>⏰ <b>Start:</b> {match.start or '—'}</p>
+                        <p>⏰ <b>End:</b> {match.end or '—'}</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
