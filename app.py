@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 # Config
 # --------------------------------------------------------------------------
 
-DEFAULT_URL = "https://www.bracu.ac.bd/ug-wishlist-event-schedule-fall-2026"
+DEFAULT_URL = "https://www.bracu.ac.bd/pre-registration-phase-1-schedule-fall-2026"
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
