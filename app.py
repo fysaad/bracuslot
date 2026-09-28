@@ -1,9 +1,8 @@
 """
-BRACU Slot Finder
-------------------
+BRACU Slot Finder  (11 July version: single round, theme-aware card)
+--------------------------------------------------------------------
 Paste any BRAC University Wishlist / Self Registration / Advising schedule
-link, enter your earned credits and program, and get your exact slot
-(Date, Day, Start, End) without scrolling through the whole table.
+link, enter your earned credits and program, and get your exact slot.
 
 Run locally:
     pip install -r requirements.txt
@@ -30,8 +29,6 @@ REQUEST_HEADERS = {
 }
 REQUEST_TIMEOUT = 15
 
-# Keywords used to identify each logical column from raw header text.
-# Order matters for the ambiguous ones (check "date" before "day").
 COLUMN_KEYWORDS = {
     "from": ["from"],
     "to": ["to"],
@@ -43,7 +40,6 @@ COLUMN_KEYWORDS = {
 }
 
 PROGRAM_ALIASES = {
-    # Handles common variants students might type vs. how the site lists them
     "CSE": ["CSE", "CS"],
     "CS": ["CSE", "CS"],
 }
@@ -92,10 +88,7 @@ def _to_float(text: str):
 
 
 def _classify_header(text: str):
-    """Return the logical column key a header cell text most likely refers to."""
     lowered = text.lower()
-    # Check 'date' before 'day' since 'date' does not contain 'day' but both
-    # can appear together in the same header cluster.
     for key in ["date", "day", "from", "to", "start", "end", "program"]:
         for kw in COLUMN_KEYWORDS[key]:
             if kw in lowered:
@@ -104,14 +97,7 @@ def _classify_header(text: str):
 
 
 def _build_column_map(header_rows):
-    """
-    header_rows: list of list[str] -- one or more header rows (positionally
-    aligned) that sit above the data rows. We union keyword matches across
-    all of them so split headers like:
-        Row A: | Credits      | Program | Wishlist            |
-        Row B: | From | To    |         | Day | Date | Start | End |
-    still resolve correctly per column index.
-    """
+    """Map column index -> logical key, unioned across all header rows."""
     max_cols = max((len(r) for r in header_rows), default=0)
     col_map = {}
     for col_idx in range(max_cols):
@@ -122,7 +108,7 @@ def _build_column_map(header_rows):
             if key and key not in col_map.values():
                 col_map[col_idx] = key
                 break
-    return col_map  # {column_index: logical_key}
+    return col_map
 
 
 def _row_is_data_row(cells) -> bool:
@@ -135,11 +121,8 @@ def _row_is_data_row(cells) -> bool:
 
 def _table_to_grid(table):
     """
-    Convert an HTML table into a 2D grid of cell text, correctly accounting
-    for colspan/rowspan so that header and data cells line up by column
-    index even when header cells merge across multiple columns or rows
-    (very common in schedule tables, e.g. one "Program" header spanning
-    two header rows, or "Wishlist" spanning four sub-columns).
+    Convert an HTML table into a 2D grid of cell text, accounting for
+    colspan/rowspan so header and data cells line up by column index.
     """
     trs = table.find_all("tr")
     grid = []
@@ -191,12 +174,6 @@ def _table_to_grid(table):
 
 
 def find_schedule_table(html: str):
-    """
-    Scan every <table> on the page using a rowspan/colspan-aware grid, split
-    rows into header rows (everything before the first row that looks like
-    data) and data rows, and return the first table where a usable column
-    map (from + to + program) can be built.
-    """
     soup = BeautifulSoup(html, "lxml")
     tables = soup.find_all("table")
 
@@ -227,9 +204,6 @@ def find_schedule_table(html: str):
         if slots:
             return slots
 
-    # No usable <table> found (or none matched) — fall back to scanning the
-    # whole page's visible text for schedule-shaped lines. This doesn't rely
-    # on any particular tag structure, so it survives layout changes.
     return _parse_freeform_schedule(soup)
 
 
@@ -275,17 +249,10 @@ def _rows_to_slots(data_rows, col_map):
 
 def _parse_freeform_schedule(soup):
     """
-    Last-resort parser: strip the page down to its plain visible text and
-    scan the whole thing for schedule-shaped substrings, regardless of
-    whether they sit inside a <table>, a <ul>, or plain paragraphs. This
-    survives most markup/layout changes since it doesn't depend on any tag.
-
-    Matches patterns like:
-    'From To Program1, Program2, ... Day N Weekday DD Month Start End'
+    Last-resort parser: scan the page's visible text for schedule-shaped
+    substrings, regardless of tag structure.
     e.g. "115 206 ARC, CSE, ... Day 1 Sun 12 July 9:00 AM 10:30 AM"
     """
-    # Drop elements that are almost never part of the actual schedule data
-    # (nav/menus/scripts) so their text doesn't pollute the scan.
     for tag in soup.find_all(["nav", "script", "style", "header", "footer"]):
         tag.decompose()
 
@@ -443,5 +410,6 @@ if submitted:
 st.divider()
 st.caption(
     "Note: This tool scrapes the live page each time you search, so results "
-    "reflect whatever is currently published on the BRACU site."
+    "reflect whatever is currently published on the BRACU site.  \n"
     "Made BY BLUE"
+)
