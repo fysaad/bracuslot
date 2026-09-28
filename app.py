@@ -14,6 +14,8 @@ import html as html_lib
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 import streamlit as st
@@ -102,6 +104,39 @@ class SlotRow:
 
 class FetchError(Exception):
     pass
+
+
+SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
+
+
+def load_snapshot(url: str):
+    """
+    Saved copy of a schedule page (snapshots/<last-url-segment>.txt), used only
+    when the live site blocks this server. Returns (body_text, meta) or None.
+    """
+    slug = re.sub(r"[^a-z0-9-]", "", urlparse(url.strip()).path.rstrip("/").split("/")[-1].lower())
+    if not slug:
+        return None
+    f = SNAPSHOT_DIR / f"{slug}.txt"
+    if not f.is_file():
+        return None
+    meta, body = {}, []
+    for line in f.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#"):
+            if ":" in line:
+                k, v = line[1:].split(":", 1)
+                meta[k.strip().lower()] = v.strip()
+        else:
+            body.append(line)
+    return "\n".join(body), meta
+
+
+def apply_labels(slots, labels_meta: str):
+    labels = [x.strip() for x in labels_meta.split("|") if x.strip()]
+    for row in slots:
+        if len(labels) == len(row.sessions) > 1:
+            for sess, label in zip(row.sessions, labels):
+                sess.label = label
 
 
 def _looks_like_schedule(text: str) -> bool:
@@ -554,6 +589,7 @@ if submitted:
         st.error("Please enter a valid URL (or paste the schedule text).")
     else:
         page_html = None
+        snap_meta = None
         if pasted_text:
             page_html = pasted_text
         else:
@@ -561,15 +597,26 @@ if submitted:
                 try:
                     page_html = fetch_html(url.strip())
                 except FetchError as e:
-                    st.error(f"Couldn't fetch that URL. {e}")
-                    st.info(
-                        "BRACU may be blocking this server. Open the page in your "
-                        "browser, copy the schedule table, paste it into "
-                        "\"Can't load the link?\" above, and press Find My Slot again."
-                    )
+                    snap = load_snapshot(url.strip())
+                    if snap:
+                        page_html, snap_meta = snap
+                        st.warning(
+                            "BRACU is blocking live access from this server, so this result "
+                            f"comes from a saved copy (saved {snap_meta.get('saved', 'earlier')}). "
+                            "If the university changed the schedule since then, check the official page."
+                        )
+                    else:
+                        st.error(f"Couldn't fetch that URL. {e}")
+                        st.info(
+                            "BRACU may be blocking this server. Open the page in your "
+                            "browser, copy the schedule table, paste it into "
+                            "\"Can't load the link?\" above, and press Find My Slot again."
+                        )
 
         if page_html is not None:
             slots = find_schedule_table(page_html)
+            if slots and snap_meta and snap_meta.get("labels"):
+                apply_labels(slots, snap_meta["labels"])
 
             if not slots:
                 st.warning(
