@@ -12,6 +12,7 @@ Run locally:
 
 import html as html_lib
 import re
+import time
 from dataclasses import dataclass, field
 
 import requests
@@ -23,13 +24,25 @@ from bs4 import BeautifulSoup
 # --------------------------------------------------------------------------
 
 DEFAULT_URL = "https://www.bracu.ac.bd/self-registration-schedule-fall-2026"
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+]
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 REQUEST_TIMEOUT = 15
+RELAY_PREFIX = "https://r.jina.ai/"  # last-resort public reader, used only if direct fetch is blocked
 
 # Header keyword patterns (word-boundary based). Order matters: "date" is
 # checked before "day".
@@ -87,10 +100,49 @@ class SlotRow:
 # Scraping / parsing helpers
 # --------------------------------------------------------------------------
 
+class FetchError(Exception):
+    pass
+
+
+def _looks_like_schedule(text: str) -> bool:
+    low = text.lower()
+    return "program" in low and re.search(r"\d{1,2}:\d{2}", text) is not None
+
+
 def fetch_html(url: str) -> str:
-    resp = requests.get(url, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.text
+    """
+    Fetch a page like a real browser would. BRACU's server sometimes answers
+    403 to bare/cloud-hosted clients, so: full browser headers, a session,
+    a few retries with different user agents, then a last-resort public
+    reader relay (only used if every direct attempt is blocked).
+    """
+    last_err = "unknown error"
+    session = requests.Session()
+    for attempt, ua in enumerate(USER_AGENTS):
+        headers = {**BROWSER_HEADERS, "User-Agent": ua}
+        try:
+            resp = session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 200:
+                return resp.text
+            last_err = f"HTTP {resp.status_code}"
+            if resp.status_code not in (403, 429, 503):
+                break
+        except requests.RequestException as e:
+            last_err = str(e)
+        time.sleep(0.8 * (attempt + 1))
+
+    try:
+        resp = requests.get(
+            RELAY_PREFIX + url,
+            headers={"X-Return-Format": "html", "Accept": "text/html"},
+            timeout=30,
+        )
+        if resp.status_code == 200 and _looks_like_schedule(resp.text):
+            return resp.text
+    except requests.RequestException:
+        pass
+
+    raise FetchError(f"The site refused the request ({last_err}).")
 
 
 def _cell_text(cell) -> str:
@@ -119,6 +171,19 @@ def _find_round_label(texts):
     return None
 
 
+NON_GROUP_TEXT = {"credits", "credit", "program", "programs"}
+
+
+def _group_label(texts):
+    """Use the merged group header above a column (e.g. 'Self-Registration
+    (Repeat)') as the round label."""
+    for t in texts:
+        t = t.strip()
+        if t and _classify_header(t) is None and t.lower() not in NON_GROUP_TEXT:
+            return t
+    return None
+
+
 def _build_column_map(header_rows):
     """
     Returns a list of (column_index, key, round_label_or_None).
@@ -142,37 +207,42 @@ def _build_column_map(header_rows):
             else:
                 seen_single.add(key)
         if key:
-            cols.append((ci, key, _find_round_label(texts)))
+            cols.append((ci, key, _group_label(texts) or _find_round_label(texts)))
     return cols
 
 
 def _group_session_columns(col_map):
     """
-    Group day/date/start/end columns into rounds. Columns carrying an explicit
-    'Round N' label are grouped by that label; unlabeled columns are grouped
-    by repetition (second occurrence of a key starts the next round).
+    Group day/date/start/end columns into rounds. Columns sharing a group
+    header (e.g. 'Self-Registration (Round 1)') form one round; a repeated key
+    under the same/no label starts the next round.
     Returns a list of (label, {key: column_index}).
     """
     groups = []  # each: {"label": str|None, "cols": {key: idx}}
     for idx, key, label in col_map:
         if key not in SESSION_KEYS:
             continue
-        target = None
-        if label:
-            target = next((g for g in groups if g["label"] == label), None)
-        else:
-            target = next(
-                (g for g in groups if g["label"] is None and key not in g["cols"]),
-                None,
-            )
+        target = next(
+            (g for g in groups if g["label"] == label and key not in g["cols"]),
+            None,
+        )
         if target is None:
             target = {"label": label, "cols": {}}
             groups.append(target)
         target["cols"][key] = idx
 
+    labels = [g["label"] for g in groups]
+    use_own_labels = (
+        len(groups) > 1 and all(labels) and len(set(labels)) == len(labels)
+    )
     result = []
     for n, g in enumerate(groups, start=1):
-        label = g["label"] or (f"Round {n}" if len(groups) > 1 else "Your Slot")
+        if len(groups) == 1:
+            label = "Your Slot"
+        elif use_own_labels:
+            label = g["label"]
+        else:
+            label = f"Round {n}"
         result.append((label, g["cols"]))
     return result
 
@@ -342,13 +412,13 @@ def _parse_freeform_schedule(soup):
     for tag in soup.find_all(["nav", "script", "style", "header", "footer"]):
         tag.decompose()
 
-    full_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    full_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True).replace("*", ""))
 
     time_ = r"\d{1,2}:\d{2}\s*[AaPp]\.?[Mm]\.?"
     block = (
         r"(?:(?:Round\s*\d+)\s+)?"
         r"(?:(?P<day{n}>Day\s*\d+)\s+)?"
-        r"(?P<date{n}>[A-Za-z]{3}\s+\d{1,2}\s+[A-Za-z]+)\s+"
+        r"(?P<date{n}>[A-Za-z]{3}\s+\d{1,2}(?:\s+|-)[A-Za-z]+)\s+"
         r"(?P<start{n}>" + time_ + r")\s*[-–—to]*\s*"
         r"(?P<end{n}>" + time_ + r")"
     )
@@ -412,14 +482,15 @@ def render_card(match: SlotRow, program: str, credits_: float) -> str:
     esc = html_lib.escape
 
     def session_html(s: Session) -> str:
+        day_line = f"<p>🗓️ <b>Day:</b> {esc(s.day)}</p>" if s.day else ""
         return (
             '<div class="slot-session">'
             f"<h4>{esc(s.label)}</h4>"
             f"<p>📅 <b>Date:</b> {esc(s.date or '—')}</p>"
-            f"<p>🗓️ <b>Day:</b> {esc(s.day or '—')}</p>"
-            f"<p>⏰ <b>Start:</b> {esc(s.start or '—')}</p>"
-            f"<p>⏰ <b>End:</b> {esc(s.end or '—')}</p>"
-            "</div>"
+            + day_line
+            + f"<p>⏰ <b>Start:</b> {esc(s.start or '—')}</p>"
+            + f"<p>⏰ <b>End:</b> {esc(s.end or '—')}</p>"
+            + "</div>"
         )
 
     sessions = "".join(session_html(s) for s in match.sessions)
@@ -467,50 +538,66 @@ with st.form("slot_form"):
         if program == "Other":
             program = st.text_input("Enter your program code", value="")
 
+    with st.expander("Can't load the link? Paste the schedule instead"):
+        pasted = st.text_area(
+            "Open the BRACU page, copy the schedule table, and paste it here",
+            height=150,
+        )
+
     submitted = st.form_submit_button("Find My Slot", use_container_width=True)
 
 if submitted:
-    if not url.strip():
-        st.error("Please enter a valid URL.")
-    elif not program.strip():
+    pasted_text = pasted.strip()
+    if not program.strip():
         st.error("Please enter your program.")
+    elif not pasted_text and not url.strip():
+        st.error("Please enter a valid URL (or paste the schedule text).")
     else:
-        with st.spinner("Fetching and reading the schedule..."):
-            try:
-                page_html = fetch_html(url.strip())
-            except requests.exceptions.RequestException as e:
-                st.error(f"Couldn't fetch that URL. Details: {e}")
-                st.stop()
+        page_html = None
+        if pasted_text:
+            page_html = pasted_text
+        else:
+            with st.spinner("Fetching and reading the schedule..."):
+                try:
+                    page_html = fetch_html(url.strip())
+                except FetchError as e:
+                    st.error(f"Couldn't fetch that URL. {e}")
+                    st.info(
+                        "BRACU may be blocking this server. Open the page in your "
+                        "browser, copy the schedule table, paste it into "
+                        "\"Can't load the link?\" above, and press Find My Slot again."
+                    )
 
+        if page_html is not None:
             slots = find_schedule_table(page_html)
 
-        if not slots:
-            st.warning(
-                "⚠️ Couldn't locate a recognizable schedule table on this page. "
-                "The page's formatting may have changed, or this isn't a "
-                "schedule page. Try opening the link in a browser to confirm "
-                "it shows a From/To/Program/Date table."
-            )
-            with st.expander("See raw fetched content (debug)"):
-                st.code(page_html[:5000], language="html")
-        else:
-            match = next((s for s in slots if s.matches(credits_, program)), None)
-
-            if match:
-                st.success("✅ Slot found!")
-                st.markdown(render_card(match, program, credits_), unsafe_allow_html=True)
-            else:
-                st.error(
-                    "❌ No matching slot found for that credit/program combination. "
-                    "Double-check your entered credits and program code, or the "
-                    "page may not include your program in its current schedule."
+            if not slots:
+                st.warning(
+                    "⚠️ Couldn't locate a recognizable schedule table on this page. "
+                    "The page's formatting may have changed, or this isn't a "
+                    "schedule page. Try opening the link in a browser to confirm "
+                    "it shows a From/To/Program/Date table."
                 )
-                with st.expander("See all parsed rows (debug)"):
-                    for s in slots:
-                        times = " | ".join(
-                            f"{x.label}: {x.day} {x.date} {x.start}–{x.end}" for x in s.sessions
-                        )
-                        st.write(f"{s.from_credit}–{s.to_credit} | {', '.join(s.programs)} | {times}")
+                with st.expander("See raw fetched content (debug)"):
+                    st.code(page_html[:5000], language="html")
+            else:
+                match = next((x for x in slots if x.matches(credits_, program)), None)
+
+                if match:
+                    st.success("✅ Slot found!")
+                    st.markdown(render_card(match, program, credits_), unsafe_allow_html=True)
+                else:
+                    st.error(
+                        "❌ No matching slot found for that credit/program combination. "
+                        "Double-check your entered credits and program code, or the "
+                        "page may not include your program in its current schedule."
+                    )
+                    with st.expander("See all parsed rows (debug)"):
+                        for x in slots:
+                            times = " | ".join(
+                                f"{t.label}: {t.day} {t.date} {t.start}–{t.end}" for t in x.sessions
+                            )
+                            st.write(f"{x.from_credit}–{x.to_credit} | {', '.join(x.programs)} | {times}")
 
 st.divider()
 st.caption(
